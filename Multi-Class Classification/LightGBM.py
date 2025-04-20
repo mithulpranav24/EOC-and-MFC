@@ -1,95 +1,104 @@
-
 import pandas as pd
+import os
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
-import lightgbm as lgb  # Import LightGBM
-from sklearn.ensemble import IsolationForest
+import lightgbm as lgb
 from sklearn.metrics import confusion_matrix, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
+
+# Set environment variable to limit CPU usage
 os.environ["LOKY_MAX_CPU_COUNT"] = "16"
 
-import re  # Regular expressions for cleaning column names
+# ---------------------------------------
+# 1. Data Loading
+# ---------------------------------------
+def load_data(file_path):
+    """Load dataset from CSV file."""
+    data = pd.read_csv(file_path)
+    return data
 
-# Load the dataset
-data_path = "dataset.csv"  # Update with your file path
-data = pd.read_csv(data_path)
+# ---------------------------------------
+# 2. Data Preprocessing
+# ---------------------------------------
+def preprocess_data(data):
+    """Clean and preprocess the dataset."""
+    # Clean column names by replacing special characters with underscores
+    data.columns = data.columns.str.replace(r'\W', '_', regex=True)
 
-# Step 1: Inspect the dataset
-"""
-print("Dataset Shape:", data.shape)
-print(data.info())
-print(data.head())
-"""
+    # Drop unnecessary columns if they exist
+    columns_to_drop = ['Unnamed: 0', 'Time']
+    data = data.drop(columns=[col for col in columns_to_drop if col in data.columns])
 
-# Step 2: Clean column names by removing special characters
-data.columns = data.columns.str.replace(r'\W', '_', regex=True)  # Replace any non-word character with '_'
+    # Handle missing values
+    numeric_cols = data.select_dtypes(include=['number']).columns
+    categorical_cols = data.select_dtypes(include=['object']).columns
 
-# Step 3: Drop unnecessary columns
-columns_to_drop = ['Unnamed: 0', 'Time']  # Update based on your dataset
-data = data.drop(columns=[col for col in columns_to_drop if col in data.columns])
+    # Fill missing values in numeric columns with mean
+    data[numeric_cols] = data[numeric_cols].fillna(data[numeric_cols].mean())
 
-# Step 4: Handle missing values
-# Separate numeric and categorical columns
-numeric_cols = data.select_dtypes(include=['number']).columns
-categorical_cols = data.select_dtypes(include=['object']).columns
+    # Fill missing values in categorical columns with mode
+    for col in categorical_cols:
+        if not data[col].isnull().all():
+            data[col] = data[col].fillna(data[col].mode()[0])
 
-# Fill missing values for numeric columns
-data[numeric_cols] = data[numeric_cols].fillna(data[numeric_cols].mean())
+    # Encode categorical variables
+    label_encoders = {}
+    for col in categorical_cols:
+        le = LabelEncoder()
+        data[col] = le.fit_transform(data[col])
+        label_encoders[col] = le
 
-# Fill missing values for categorical columns
-for col in categorical_cols:
-    if not data[col].isnull().all():
-        data[col] = data[col].fillna(data[col].mode()[0])
+    return data, label_encoders, numeric_cols
 
-# Step 5: Encode categorical variables
-label_encoders = {}
-for col in categorical_cols:
-    le = LabelEncoder()
-    data[col] = le.fit_transform(data[col])
-    label_encoders[col] = le
+# ---------------------------------------
+# 3. Feature Engineering and Scaling
+# ---------------------------------------
+def prepare_features(data, numeric_cols, target_column='attack_type'):
+    """Prepare features and target, and scale numeric features."""
+    # Define features (X) and target (y)
+    X = data.drop(columns=[target_column], errors='ignore')
+    y = data[target_column]
 
-# Step 6: Multiclass Classification using LightGBM
-if 'attack_type' in data.columns:
-    print("\n### Multiclass Classification ###")
-    
-    # Features (X) and target (y)
-    X = data.drop(columns=['attack_type'], errors='ignore')
-    y = data['attack_type']
-    
-    # Redefine numeric_cols based on updated X
+    # Update numeric_cols to only include columns present in X
     numeric_cols = X.select_dtypes(include=['number']).columns
-    
-    # Ensure no NaNs in X before scaling
-    X[numeric_cols] = X[numeric_cols].fillna(0)  # Replace NaNs with 0 or a suitable value
-    
+
+    # Replace any remaining NaNs in numeric features with 0
+    X[numeric_cols] = X[numeric_cols].fillna(0)
+
     # Scale numeric features
     scaler = StandardScaler()
     X[numeric_cols] = scaler.fit_transform(X[numeric_cols])
-    
-    # Split the data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    # Train the LightGBM model
-    clf = lgb.LGBMClassifier(n_estimators=100, random_state=42,verbose=-1)  # Adjust hyperparameters as needed
+
+    return X, y, scaler
+
+# ---------------------------------------
+# 4. Model Training
+# ---------------------------------------
+def train_model(X_train, y_train):
+    """Train LightGBM classifier."""
+    clf = lgb.LGBMClassifier(n_estimators=100, random_state=42, verbose=-1)
     clf.fit(X_train, y_train)
-    
-    # Predict
+    return clf
+
+# ---------------------------------------
+# 5. Model Evaluation and Visualization
+# ---------------------------------------
+def evaluate_model(clf, X_test, y_test):
+    """Evaluate model and visualize results."""
+    # Make predictions
     y_pred = clf.predict(X_test)
-    
-    # Confusion matrix and accuracy
+
+    # Compute confusion matrix and accuracy
     cm = confusion_matrix(y_test, y_pred)
     accuracy = (cm.diagonal().sum()) / cm.sum()
     print(f"Accuracy: {accuracy * 100:.2f}%")
-    
-    # Define target names (custom labels)
+
+    # Classification report
     target_names = ['UC1', 'UC2', 'UC3', 'UC4']
-    
-    # Classification report with custom labels
     print("\nClassification Report:\n", classification_report(y_test, y_pred, target_names=target_names))
-    
-    # Plot confusion matrix
+
+    # Visualize confusion matrix
     plt.figure(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=target_names, yticklabels=target_names)
     plt.title('Confusion Matrix')
@@ -97,4 +106,32 @@ if 'attack_type' in data.columns:
     plt.ylabel('True')
     plt.show()
 
+# ---------------------------------------
+# Main Execution
+# ---------------------------------------
+def main():
+    # Load data
+    data_path = "dataset.csv"
+    data = load_data(data_path)
 
+    # Check if multiclass classification is applicable
+    if 'attack_type' in data.columns:
+        print("\n### Multiclass Classification ###")
+
+        # Preprocess data
+        data, label_encoders, numeric_cols = preprocess_data(data)
+
+        # Prepare features and target
+        X, y, scaler = prepare_features(data, numeric_cols)
+
+        # Split data into training and testing sets
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Train model
+        clf = train_model(X_train, y_train)
+
+        # Evaluate model
+        evaluate_model(clf, X_test, y_test)
+
+if __name__ == "__main__":
+    main()
