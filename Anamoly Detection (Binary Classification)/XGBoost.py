@@ -1,107 +1,141 @@
 import pandas as pd
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from sklearn.model_selection import train_test_split
+import xgboost as xgb
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 import matplotlib.pyplot as plt
 import seaborn as sns
-import joblib
 
-# Load the dataset
-data_path = "dataset.csv"
-data = pd.read_csv(data_path)
+# ---------------------------------------
+# 1. Data Loading
+# ---------------------------------------
+def load_data(file_path):
+    """Load dataset from CSV file."""
+    data = pd.read_csv(file_path)
+    return data
 
-# Debug: Inspect the dataset
-print("Dataset Info:\n", data.info())
-print("First Few Rows:\n", data.head())
+# ---------------------------------------
+# 2. Data Preprocessing
+# ---------------------------------------
+def preprocess_data(data):
+    """Clean and preprocess the dataset."""
+    # Clean column names by replacing special characters with underscores
+    data.columns = data.columns.str.replace(r'[\W]', '_', regex=True)
 
-# Drop unnecessary columns if they exist
-data = data.drop(columns=[col for col in ['Unnamed: 0', 'Time'] if col in data.columns])
+    # Drop unnecessary columns if they exist
+    columns_to_drop = ['Unnamed_0', 'Time']
+    data = data.drop(columns=[col for col in columns_to_drop if col in data.columns])
 
-# Handle missing values: fill numerical columns with mean and categorical columns with mode
-numeric_cols = data.select_dtypes(include=['number']).columns
-categorical_cols = data.select_dtypes(include=['object']).columns
+    # Handle missing values
+    numeric_cols = data.select_dtypes(include=['number']).columns
+    categorical_cols = data.select_dtypes(include=['object']).columns
 
-data[numeric_cols] = data[numeric_cols].fillna(data[numeric_cols].mean())
+    # Fill missing values in numeric columns with mean
+    data[numeric_cols] = data[numeric_cols].fillna(data[numeric_cols].mean())
 
-if not categorical_cols.empty:
-    mode_values = {col: data[col].mode().iloc[0] for col in categorical_cols if not data[col].isnull().all()}
-    data = data.fillna(value=mode_values)
+    # Fill missing values in categorical columns with mode
+    for col in categorical_cols:
+        if not data[col].isnull().all():
+            data[col] = data[col].fillna(data[col].mode()[0])
 
-# Encode categorical variables
-for col in categorical_cols:
-    if not data[col].isnull().all():
-        data[col] = LabelEncoder().fit_transform(data[col])
+    # Encode categorical variables
+    label_encoders = {}
+    for col in categorical_cols:
+        le = LabelEncoder()
+        data[col] = le.fit_transform(data[col])
+        label_encoders[col] = le
 
-# Ensure the target column exists
-if 'snort_alert' not in data.columns:
-    raise ValueError("The target column 'snort_alert' is missing in the dataset.")
+    return data, label_encoders, numeric_cols
 
-# Identify features and target variable
-X = data.drop(columns=['snort_alert'])
-y = data['snort_alert']
+# ---------------------------------------
+# 3. Feature Engineering and Scaling
+# ---------------------------------------
+def prepare_features(data, numeric_cols, target_column='snort_alert'):
+    """Prepare features and target, and scale numeric features."""
+    # Ensure target column exists
+    if target_column not in data.columns:
+        raise ValueError(f"The target column '{target_column}' is missing in the dataset.")
 
-# Debug: Check correlation with target to avoid data leakage
-print("Feature Correlation with Target:\n", data.corr()['snort_alert'].sort_values(ascending=False))
+    # Define features (X) and target (y)
+    X = data.drop(columns=[target_column], errors='ignore')
+    y = data[target_column]
 
-# Split data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42, stratify=y)
+    # Update numeric_cols to only include columns present in X
+    numeric_cols = X.select_dtypes(include=['number']).columns
 
-# Ensure train-test split is valid
-print("Unique labels in training set:", set(y_train))
-print("Unique labels in testing set:", set(y_test))
+    # Replace any remaining NaNs in numeric features with 0
+    X[numeric_cols] = X[numeric_cols].fillna(0)
 
-# Scale features
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+    # Scale numeric features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    X_scaled = pd.DataFrame(X_scaled, columns=X.columns)  # Preserve column names
 
-# Train an XGBoost classifier with proper regularization
-clf = xgb.XGBClassifier(
-    max_depth=1, 
-    learning_rate=0.05, 
-    n_estimators=50, 
-    subsample=0.5, 
-    colsample_bytree=0.8, 
-    random_state=35,
-    use_label_encoder=False, 
-    eval_metric='logloss'
-)
-clf.fit(X_train, y_train)
+    return X_scaled, y, scaler
 
-# Make predictions
-y_pred = clf.predict(X_test)
+# ---------------------------------------
+# 4. Model Training
+# ---------------------------------------
+def train_model(X_train, y_train):
+    """Train XGBoost classifier."""
+    clf = xgb.XGBClassifier(
+        max_depth=1,
+        learning_rate=0.05,
+        n_estimators=50,
+        subsample=0.5,
+        colsample_bytree=0.8,
+        random_state=35,
+        eval_metric='logloss'
+    )
+    clf.fit(X_train, y_train)
+    return clf
 
-# Evaluate the model
-print("Classification Report:\n", classification_report(y_test, y_pred))
-accuracy = accuracy_score(y_test, y_pred)
-print(f"Accuracy: {accuracy * 100:.2f}%")
+# ---------------------------------------
+# 5. Model Evaluation and Visualization
+# ---------------------------------------
+def evaluate_model(clf, X_test, y_test):
+    """Evaluate model, print accuracy and classification report, and visualize confusion matrix."""
+    # Make predictions
+    y_pred = clf.predict(X_test)
 
+    # Calculate and print accuracy
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"Accuracy: {accuracy * 100:.2f}%")
 
-# Generate confusion matrix
-conf_matrix = confusion_matrix(y_test, y_pred)
+    # Print classification report
+    print("Classification Report:\n", classification_report(y_test, y_pred))
 
-# Print the confusion matrix
-print("Confusion Matrix:\n", conf_matrix)
+    # Generate and visualize confusion matrix
+    conf_matrix = confusion_matrix(y_test, y_pred)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=sorted(set(y_test)), yticklabels=sorted(set(y_test)))
+    plt.title('Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.show()
 
+# ---------------------------------------
+# Main Execution
+# ---------------------------------------
+def main():
+    # Load data
+    data_path = "dataset.csv"
+    data = load_data(data_path)
 
-# Visualize the confusion matrix
-plt.figure(figsize=(8, 8))
-sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=set(y), yticklabels=set(y), cbar=False, annot_kws={"size": 20})
+    # Preprocess data
+    data, label_encoders, numeric_cols = preprocess_data(data)
 
-# Labels with increased font size
-plt.xlabel("Predicted Labels", fontsize=20)
-plt.ylabel("True Labels", fontsize=20)
+    # Prepare features and target
+    X, y, scaler = prepare_features(data, numeric_cols)
 
-# X and Y ticks
-plt.xticks(fontsize=20)
-plt.yticks(fontsize=20)
+    # Split data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42, stratify=y)
 
-# Adjust layout
-plt.tight_layout()
+    # Train model
+    clf = train_model(X_train, y_train)
 
-# Save the plot
-plt.savefig("BC-XGBoostConfusion.png", dpi=300, bbox_inches='tight')
+    # Evaluate model
+    evaluate_model(clf, X_test, y_test)
 
-# Show the plot
-plt.show()
+if __name__ == "__main__":
+    main()
